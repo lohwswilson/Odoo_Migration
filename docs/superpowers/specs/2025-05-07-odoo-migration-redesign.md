@@ -122,7 +122,9 @@ job:
 
 database:
   source_name: "BSM13"            # Source database name
-  target_name: "BSM14"            # Target database name
+  target_name: "BSM14"             # Target database name
+  admin_user: "admin.synercatalyst"  # Odoo admin user (from .env)
+  # admin_password: from .env (ODOO_DB_PASS)
   modules_to_remove:              # Modules to uninstall before migration
     - module_a
     - module_b
@@ -136,6 +138,40 @@ paths:
 ```
 
 **Note:** `target_version` in `paths` (old config) replaced by `job.to_version`. Backup name auto-computed from `source_name`.
+
+---
+
+## Credentials Management
+
+Credentials are stored in `.env` files, NOT in YAML files. This prevents accidental commit of sensitive data.
+
+### .env File Structure
+
+```bash
+# Odoo_Migration/.env (gitignored)
+ODOO_DB_USER=admin.synercatalyst
+ODOO_DB_PASS=your_password_here
+```
+
+### Priority Order
+
+| Source | admin_user | admin_password |
+|--------|-----------|----------------|
+| Environment variable | `ODOO_DB_USER` | `ODOO_DB_PASS` |
+| `.env` file | `ODOO_DB_USER` | `ODOO_DB_PASS` |
+| YAML file | `database.admin_user` | `database.admin_password` |
+
+### Project-Specific Credentials
+
+Each project folder can have its own `.env` file:
+```
+BSM/
+  .env                    ← BSM-specific credentials
+  BSM_13to14.yaml
+  custom_cleanup.py
+```
+
+`.env` files are gitignored and must never be committed.
 
 ---
 

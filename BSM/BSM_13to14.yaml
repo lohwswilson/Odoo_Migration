@@ -1,0 +1,28 @@
+job:
+  name: "BSM Migration 13 to 14"
+  from_version: "13.0"
+  to_version: "14.0"
+
+database:
+  source_name: "BSM13"
+  target_name: "BSM14"
+  admin_user: "admin.synercatalyst"
+  # admin_password loaded from .env file (ODOO_DB_PASS)
+  modules_to_remove:
+    - account_bank_statement_import_csv
+    - auth_session_timeout
+    - barcodes
+    - pw_theme_layout
+    - theme_bootswatch
+    - theme_kea
+    - website_event_questions
+    - website_animate
+    - website_event_require_login
+    - web_responsive
+  custom_cleanup_script: "BSM/custom_cleanup.py"
+
+paths:
+  source_odoo: "/opt/PW/PW.3.0"
+  target_odoo: "/opt/PW/PW.4.0"
+  openupgrade: "/opt/PW/OpenUpgrade_14.0"
+  config_file: "odoo.conf"

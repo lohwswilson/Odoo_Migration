@@ -868,6 +868,51 @@ git commit -m "feat: complete Odoo migration tool redesign"
 
 ---
 
+## Credentials Management (Implemented)
+
+Credentials are stored in `.env` files, NOT in YAML files.
+
+### Implementation
+
+1. **`.env` file loading** added to `migrate_lib.py`:
+```python
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent / '.env')
+except ImportError:
+    pass
+```
+
+2. **HopConfig updated** with `admin_user` and `admin_password` fields.
+
+3. **Priority order in `load_hop_config()`**:
+```python
+admin_user=os.environ.get('ODOO_DB_USER', db.get('admin_user', 'admin')),
+admin_password=os.environ.get('ODOO_DB_PASS', '') or db.get('admin_password', ''),
+```
+
+### File Structure
+
+```
+Odoo_Migration/
+  .env                          # Global credentials (gitignored)
+  .env.example                  # Template for credentials
+  migrate_lib.py                # Loads .env automatically
+  BSM/
+    .env                        # BSM-specific credentials
+    BSM_13to14.yaml             # No password in YAML
+    custom_cleanup.py
+```
+
+### .gitignore includes
+
+```
+.env
+.env.*
+```
+
+---
+
 ## Verification
 
 After all tasks, verify:

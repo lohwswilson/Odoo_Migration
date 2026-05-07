@@ -1,6 +1,8 @@
 # Environment and secrets
 *.env
-*.env.local
+.env
+.env.local
+.env.*.local
 *.secret
 *.token
 secrets/
@@ -25,7 +27,7 @@ env/
 .DS_Store
 
 # Odoo specific (large dirs that shouldn't be in repo)
-AIM.zip
+*.zip
 backups/
 *.sql
 *.dump

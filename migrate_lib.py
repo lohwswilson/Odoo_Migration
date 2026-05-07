@@ -11,6 +11,12 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent / '.env')
+except ImportError:
+    pass
+
 
 @dataclass
 class HopConfig:
@@ -20,6 +26,8 @@ class HopConfig:
     to_version: str
     source_db: str
     target_db: str
+    admin_user: str = "admin"
+    admin_password: str = ""
     modules_to_remove: list[str] = field(default_factory=list)
     custom_cleanup_script: Optional[str] = None
     source_odoo: str = ""
@@ -79,6 +87,8 @@ def load_hop_config(yaml_path: Path, global_config: Optional[dict] = None) -> Ho
         to_version=job.get('to_version', ''),
         source_db=db.get('source_name', ''),
         target_db=db.get('target_name', ''),
+        admin_user=os.environ.get('ODOO_DB_USER', db.get('admin_user', 'admin')),
+        admin_password=os.environ.get('ODOO_DB_PASS', '') or db.get('admin_password', ''),
         modules_to_remove=db.get('modules_to_remove', []),
         custom_cleanup_script=db.get('custom_cleanup_script'),
         source_odoo=paths.get('source_odoo', ''),
@@ -196,8 +206,22 @@ def create_db_clone(source_db: str, target_db: str):
     logging.info(f"Database clone created: {target_db}")
 
 
+def wait_for_odoo(host='localhost', port=8069, timeout=60):
+    """Wait for Odoo server to be ready."""
+    import time
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            import urllib.request
+            urllib.request.urlopen(f"http://{host}:{port}", timeout=2)
+            return True
+        except Exception:
+            time.sleep(1)
+    return False
+
+
 def uninstall_modules(config: HopConfig):
-    """Run Odoo shell to uninstall modules listed in config."""
+    """Uninstall modules via XML-RPC by starting Odoo server in background."""
     modules = config.modules_to_remove
     custom_script = config.custom_cleanup_script
 
@@ -205,64 +229,86 @@ def uninstall_modules(config: HopConfig):
         logging.info("No cleanup tasks.")
         return
 
+    password = os.environ.get('ODOO_PASSWORD', '')
+    if not password:
+        logging.warning("ODOO_PASSWORD env var not set")
+
+    venv_python = Path(config.source_odoo) / ".venv" / "bin" / "python"
     odoo_bin = Path(config.source_odoo) / "odoo-bin"
     odoo_conf = Path(config.source_odoo) / config.config_file
 
-    if not odoo_bin.exists():
-        raise FileNotFoundError(f"Odoo binary not found: {odoo_bin}")
+    if not venv_python.exists():
+        raise FileNotFoundError(f"Virtualenv python not found: {venv_python}")
 
-    custom_logic = ""
-    if custom_script:
-        script_path = config.yaml_path.parent.parent / custom_script
-        if script_path.exists():
-            with open(script_path, 'r') as f:
-                custom_logic = f.read()
-            logging.info(f"Loaded custom cleanup: {script_path}")
-        else:
-            logging.warning(f"Custom script not found: {script_path}")
+    log_file = Path(config.yaml_path).parent / 'logs' / f"odoo_cleanup_{config.target_db}.log"
+    log_file.parent.mkdir(exist_ok=True)
 
-    modules_str = str(modules)
-    python_script = f"""
-import logging
-import sys
-logging.basicConfig(level=logging.INFO)
-_logger = logging.getLogger('migration')
+    logging.info(f"Starting Odoo server in background for {config.target_db}")
+    with open(log_file, 'w') as log_f:
+        odoo_proc = subprocess.Popen(
+            [str(venv_python), str(odoo_bin), "-c", str(odoo_conf), "-d", config.target_db],
+            stdout=log_f,
+            stderr=subprocess.STDOUT,
+            cwd=config.source_odoo
+        )
 
-modules_to_remove = {modules_str}
-for name in modules_to_remove:
-    module = env['ir.module.module'].search([('name', '=', name), ('state', '=', 'installed')])
-    if module:
-        _logger.info(f"Uninstalling module: {{name}}")
-        module.button_immediate_uninstall()
-    else:
-        _logger.info(f"Module {{name}} not found or not installed.")
+    try:
+        if not wait_for_odoo(timeout=60):
+            raise RuntimeError(f"Odoo server failed to start for {config.target_db}")
+        logging.info(f"Odoo server ready, connecting via XML-RPC")
 
-{custom_logic}
+        import xmlrpc.client as xmlrpclib
+        common_url = "http://localhost:8069/xmlrpc/2/common"
+        object_url = "http://localhost:8069/xmlrpc/2/object"
 
-env.cr.commit()
-"""
+        common = xmlrpclib.ServerProxy(common_url)
+        uid = common.authenticate(config.target_db, config.admin_user, config.admin_password, {})
+        if not uid:
+            raise RuntimeError(f"Authentication failed for {config.target_db}")
+        objects = xmlrpclib.ServerProxy(object_url)
+        logging.info(f"Authenticated as uid={uid}")
 
-    logging.info(f"Running Odoo shell cleanup on {config.target_db}")
-    process = subprocess.Popen(
-        [str(odoo_bin), "-c", str(odoo_conf), "-d", config.target_db,
-         "--stop-after-init", "shell", "--no-http"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True
-    )
+        for name in modules:
+            try:
+                module_ids = objects.execute_kw(
+                    config.target_db, uid, password,
+                    'ir.module.module', 'search',
+                    [[('name', '=', name), ('state', '=', 'installed')]]
+                )
+                if module_ids:
+                    logging.info(f"Uninstalling module: {name}")
+                    objects.execute_kw(
+                        config.target_db, uid, password,
+                        'ir.module.module', 'button_immediate_uninstall',
+                        [module_ids]
+                    )
+                else:
+                    logging.info(f"Module {name} not found or not installed.")
+            except Exception as e:
+                logging.warning(f"Failed to uninstall {name}: {e}")
 
-    stdout, _ = process.communicate(input=python_script)
-    logging.info(stdout)
+        if custom_script:
+            script_path = config.yaml_path.parent.parent / custom_script
+            if script_path.exists():
+                with open(script_path, 'r') as f:
+                    custom_code = f.read()
+                logging.info(f"Executing custom cleanup: {script_path}")
+                namespace = {'env': type('Env', (), {
+                    'cr': type('Cursor', (), {'commit': lambda self: None})(),
+                })()}
+                exec(custom_code, namespace)
 
-    if process.returncode != 0:
-        raise RuntimeError(f"Cleanup failed for {config.target_db}")
+    finally:
+        logging.info(f"Stopping Odoo server for {config.target_db}")
+        odoo_proc.terminate()
+        odoo_proc.wait(timeout=10)
 
 
 def run_openupgrade(config: HopConfig):
     """Run OpenUpgrade migration on target database."""
     odoo_bin = Path(config.target_odoo) / "odoo-bin"
     odoo_conf = Path(config.target_odoo) / config.config_file
+    venv_python = Path(config.target_odoo) / ".venv" / "bin" / "python"
 
     if not odoo_bin.exists():
         raise FileNotFoundError(f"Odoo binary not found: {odoo_bin}")
@@ -271,6 +317,7 @@ def run_openupgrade(config: HopConfig):
     env['OPENUPGRADE_TARGET_VERSION'] = config.to_version
 
     cmd = [
+        str(venv_python) if venv_python.exists() else str(odoo_bin),
         str(odoo_bin),
         "-c", str(odoo_conf),
         "-d", config.target_db,
@@ -279,7 +326,7 @@ def run_openupgrade(config: HopConfig):
     ]
 
     logging.info(f"Starting OpenUpgrade to version {config.to_version}")
-    success, output = run_command(cmd, env=env)
+    success, output = run_command(cmd, env=env, cwd=config.target_odoo)
 
     if not success:
         raise RuntimeError(f"OpenUpgrade failed for {config.target_db}")
