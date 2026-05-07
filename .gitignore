@@ -1,0 +1,39 @@
+# Environment and secrets
+*.env
+*.env.local
+*.secret
+*.token
+secrets/
+credentials/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Odoo specific (large dirs that shouldn't be in repo)
+AIM.zip
+backups/
+*.sql
+*.dump
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
